@@ -38,6 +38,7 @@ to the denominator) with appropriate tuning of λ (see Proposition 1).
 
 import abc
 import math
+import enum
 from typing import List
 from absl import logging
 
@@ -85,6 +86,17 @@ class Estimator(abc.ABC):
     """Returns a shorter version of the name returned by get_name.
     """
 
+class ESLBBiasType(enum.Enum):
+  """Bias control type of ESLB estimator.
+
+  ESLBBiasType.MultOneHot = Multiplicative bias (only for `one-hot' rewards).
+  ESLBBiasType.Bernstein = Bernstein bias (for rewards in [0,1], looser than above).
+  """
+  MultOneHot = "MultOneHot"
+  Bernstein = "Bernstein"
+
+  def __str__(self):
+    return str(self.value)
 
 class ESLB(Estimator):
   """Implements a Semi-Empirical Efron-Stein bound for the SNIW (Self-normalized Importance Weighted estimator).
@@ -94,6 +106,7 @@ class ESLB(Estimator):
     n_iterations: Number of Monte-Carlo simulation iterations for approximating
       a multiplicative bias and a variance proxy.
     n_batch_size: Monte-Carlo simulation batch size.
+    bias_type: type of bias control to use (see ESLBBiasType).
   """
 
   def __init__(
@@ -101,6 +114,7 @@ class ESLB(Estimator):
       delta: float,
       n_iterations: int,
       n_batch_size: int,
+      bias_type: ESLBBiasType
   ):
     """Constructs an estimator.
 
@@ -110,10 +124,12 @@ class ESLB(Estimator):
       delta: delta: Error probability in (0,1) for a confidence interval.
       n_iterations: Monte-Carlo simulation iterations.
       n_batch_size: Monte-Carlo simulation batch size.
+      bias_type: type of bias control to use.
     """
     self.delta = delta
     self.n_iterations = n_iterations
     self.n_batch_size = n_batch_size
+    self.bias_type = bias_type
 
   def get_name(self):
     """Returns the long name of the estimator."""
@@ -169,7 +185,12 @@ class ESLB(Estimator):
 
     var_proxy_unsumed = np.zeros((n,))
     expected_var_proxy_unsumed = np.zeros((n,))
-    expected_recip_weights = 0.0
+    loo_expected_recip_weights = 0.0
+
+    are_rewards_binary = ((rewards==0) | (rewards==1)).all()
+    if self.bias_type == ESLBBiasType.MultOneHot and not are_rewards_binary:
+      raise Exception("""bias_type=ESLBBiasType.MultOneHot only supports one-hot rewards. 
+Consider using bias_type=ESLBBiasType.Bernstein""")
 
     logging.debug(
         "ESLB:: Running Monte-Carlo estimation of the variance proxy and bias")
@@ -185,45 +206,65 @@ class ESLB(Estimator):
       weights_hybrid_sums = np.copy(weights_cumsum)
       weights_hybrid_sums[:-1, :] += weights_sampled_cumsum[1:, :]
 
-      actions_sampled_for_u = utils.sample_from_simplices_m_times(
-          b_probs, self.n_batch_size)
-      weights_sampled_for_u = weight_table[ix_1_n, actions_sampled_for_u.T].T
-      actions_sampled_for_bias = utils.sample_from_simplices_m_times(
-          b_probs, self.n_batch_size)
-      weights_sampled_for_bias = weight_table[ix_1_n,
-                                              actions_sampled_for_bias.T].T
-
+      # Computing variance proxy
       weights_hybrid_sums_replace_k = weights_hybrid_sums - weights_repeated + weights_sampled
-      weights_tilde = weights_repeated / weights_hybrid_sums
-      u_tilde = weights_sampled_for_u / weights_hybrid_sums_replace_k
-      var_proxy_t = (weights_tilde + u_tilde)**2
 
-      expected_var_proxy_new_item = ((weights_sampled /
-                                      weights_sampled.sum(axis=0))**2).mean(
-                                          axis=1)
+      sn_weights = weights_repeated / weights_hybrid_sums
+      sn_weights_prime = weights_sampled / weights_hybrid_sums_replace_k
+
+      var_proxy_t = (sn_weights + sn_weights_prime)**2
       var_proxy_new_item = var_proxy_t.mean(axis=1)
-
-      expected_var_proxy_unsumed += (expected_var_proxy_new_item -
-                                     expected_var_proxy_unsumed) / (
-                                         i + 1)
       var_proxy_unsumed += (var_proxy_new_item - var_proxy_unsumed) / (i + 1)
 
-      bias_t = (1.0 / weights_sampled_for_bias.sum(axis=0)).mean()
-      expected_recip_weights += (bias_t - expected_recip_weights) / (i + 1)
+      actions_sampled_for_expected_var = utils.sample_from_simplices_m_times(
+          b_probs, self.n_batch_size)
+      weights_sampled_for_expected_var = weight_table[
+          ix_1_n, actions_sampled_for_expected_var.T].T
+
+      expected_var_proxy_new_item = (
+          (weights_sampled_for_expected_var /
+           weights_sampled_for_expected_var.sum(axis=0))**2).mean(axis=1)
+      expected_var_proxy_unsumed += (expected_var_proxy_new_item -
+                                     expected_var_proxy_unsumed) / (i + 1)
+
+
+      if self.bias_type == ESLBBiasType.MultOneHot:
+        # Computing bias (loo = leave-one-out)
+        # Rewards are `one-hot'
+        actions_sampled_for_bias = utils.sample_from_simplices_m_times(
+          b_probs, self.n_batch_size)
+        weights_sampled_for_bias = weight_table[ix_1_n,
+                                                actions_sampled_for_bias.T].T
+        loo_sum_weights = np.outer(
+          np.ones((n,)),
+          np.sum(weights_sampled_for_bias, axis=0)
+        ) - weights_sampled_for_bias
+        loo_expected_recip_weights += (1 / np.min(loo_sum_weights, axis=0)).mean()
 
     var_proxy = var_proxy_unsumed.sum()
     expected_var_proxy = expected_var_proxy_unsumed.sum()
 
-    eff_sample_size = 1.0 / expected_recip_weights
-
-    mult_bias = min(1.0, eff_sample_size / n)
+    if self.bias_type == ESLBBiasType.MultOneHot:
+      loo_expected_recip_weights /= self.n_iterations
+      eff_sample_size = 1.0 / loo_expected_recip_weights
+      mult_bias = min(1.0, eff_sample_size / n)
+      add_bias = 0
+    elif self.bias_type == ESLBBiasType.Bernstein:
+      # Computing Bernstein bias control (based on lower tail Bernstein's inequality)
+      expected_sum_weights_sq = (t_probs**2 / b_probs).sum()
+      bias_x = math.log(n) / 2
+      mult_bias = 1 - math.sqrt(2 * expected_sum_weights_sq * bias_x) / n
+      mult_bias = max(0, mult_bias)
+      add_bias = math.exp(-bias_x)
+      
     concentration = math.sqrt(
         2.0 * (var_proxy + expected_var_proxy) *
         (conf + 0.5 * math.log(1 + var_proxy / expected_var_proxy)))
     concentration_of_contexts = math.sqrt(conf / (2 * n))
     est_value = weights.dot(rewards) / weights.sum()
-    lower_bound = mult_bias * (est_value -
-                               concentration) - concentration_of_contexts
+    lower_bound = mult_bias * (est_value
+                               - concentration
+                               - add_bias) - concentration_of_contexts
 
     return dict(
         estimate=max(0, lower_bound),
@@ -631,6 +672,7 @@ def get_estimators(
     delta,
     eslb_iter: int,
     eslb_batch_size: int,
+    eslb_bias_type: ESLBBiasType
 ):
   """Constructs estimators to be used in the benchmark.
 
@@ -638,6 +680,7 @@ def get_estimators(
     delta: Error probability in (0,1).
     eslb_iter: Monte-Carlo simulation iterations for ESLB estimator.
     eslb_batch_size: Monte-Carlo simulation batch size for ESLB estimator.
+    eslb_bias_type: type of bias control to use (see ESLBBiasType).
 
   Returns:
     A list of dictionaries containing at least one entry "estimate" (key).
@@ -648,6 +691,7 @@ def get_estimators(
       SNIWEstimator(),
       SNIWChebyshevEstimator(delta=delta),
       IWLambdaEmpBernsteinEstimator(delta=delta),
-      ESLB(delta=delta, n_iterations=eslb_iter, n_batch_size=eslb_batch_size),
+      ESLB(delta=delta, n_iterations=eslb_iter, n_batch_size=eslb_batch_size,
+           bias_type=eslb_bias_type),
   ]
   return estimators

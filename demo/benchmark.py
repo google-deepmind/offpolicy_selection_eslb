@@ -105,6 +105,13 @@ _ESLB_ITER = flags.DEFINE_integer(
 _ESLB_BATCH = flags.DEFINE_integer(
     "eslb_batch", 1000, "Monte-Carlo batch size for ESLB.", lower_bound=0)
 
+_ESLB_BIAS_TYPE = flags.DEFINE_enum(
+  "eslb_bias_type",
+  "mult_one_hot",  
+  ["mult_one_hot", "bernstein"],
+  "Bias control type for ESLB.",
+)
+
 _TABLE_FORMAT = flags.DEFINE_string(
     "table_format", "psql",
     "Result table format (e.g. psql, latex, html). See https://pypi.org/project/tabulate/"
@@ -128,6 +135,11 @@ def main(argv):
   elif _DATASET_TYPE.value == "demo":
     dataset_ids = [28, 30]
 
+  if _ESLB_BIAS_TYPE.value == "mult_one_hot":
+    eslb_bias_type = estimators.ESLBBiasType.MultOneHot
+  elif _ESLB_BIAS_TYPE.value == "bernstein":
+    eslb_bias_type = estimators.ESLBBiasType.Bernstein
+
   logging.info(
       green("running on '%s' dataset suite (openml ids: %s); see --help"),
       _DATASET_TYPE.value, ", ".join(map(str, dataset_ids)))
@@ -150,48 +162,51 @@ def main(argv):
                _ESLB_ITER.value)
   logging.info(green("ESLB estimator Monte-Carlo batch size = %d"),
                _ESLB_BATCH.value)
+  logging.info(green("ESLB bias control type = %s"),
+               _ESLB_BIAS_TYPE.value)
 
   estimators_ = estimators.get_estimators(
-      delta=_DELTA.value,
-      eslb_iter=_ESLB_ITER.value,
-      eslb_batch_size=_ESLB_BATCH.value)
+    delta=_DELTA.value,
+    eslb_iter=_ESLB_ITER.value,
+    eslb_batch_size=_ESLB_BATCH.value,
+    eslb_bias_type=eslb_bias_type)
 
   target_policy_specs = [
-      ("SoftmaxGAPolicy",
-       dict(
-           step_size=_GA_STEP_SIZE.value,
-           steps=_GA_ITER.value,
-           temperature=_TARGET_POL_TEMPERATURE.value,
-           obj_type=policies.TrainedPolicyObjType.IW)),
-      ("SoftmaxGAPolicy",
-       dict(
-           step_size=_GA_STEP_SIZE.value,
-           steps=_GA_ITER.value,
-           temperature=_TARGET_POL_TEMPERATURE.value,
-           obj_type=policies.TrainedPolicyObjType.SNIW)),
-      ("SoftmaxDataPolicy",
-       dict(temperature=_TARGET_POL_TEMPERATURE.value, faulty_actions=[]))
+    ("SoftmaxGAPolicy",
+     dict(
+       step_size=_GA_STEP_SIZE.value,
+       steps=_GA_ITER.value,
+       temperature=_TARGET_POL_TEMPERATURE.value,
+       obj_type=policies.TrainedPolicyObjType.IW)),
+    ("SoftmaxGAPolicy",
+     dict(
+       step_size=_GA_STEP_SIZE.value,
+       steps=_GA_ITER.value,
+       temperature=_TARGET_POL_TEMPERATURE.value,
+       obj_type=policies.TrainedPolicyObjType.SNIW)),
+    ("SoftmaxDataPolicy",
+     dict(temperature=_TARGET_POL_TEMPERATURE.value, faulty_actions=[]))
   ]
 
   behavior_faulty_actions = list(map(int, _FAULTY_ACTIONS.value))
 
   (mean_test_rewards, std_test_rewards, mean_reference_rewards,
    std_reference_rewards, dataset_names) = experiment.run_experiment_suite(
-       list_data_ids=dataset_ids,
-       n_trials=_N_TRIALS.value,
-       behavior_policy_temperature=_BEHAVIOR_POL_TEMPERATURE.value,
-       behavior_faulty_actions=behavior_faulty_actions,
-       target_policy_specs=target_policy_specs,
-       reward_noise_p=_REWARD_NOISE_P.value,
-       estimators=estimators_)
+     list_data_ids=dataset_ids,
+     n_trials=_N_TRIALS.value,
+     behavior_policy_temperature=_BEHAVIOR_POL_TEMPERATURE.value,
+     behavior_faulty_actions=behavior_faulty_actions,
+     target_policy_specs=target_policy_specs,
+     reward_noise_p=_REWARD_NOISE_P.value,
+     estimators=estimators_)
   experiment.print_results(
-      estimators_,
-      dataset_names,
-      mean_test_rewards,
-      std_test_rewards,
-      mean_reference_rewards,
-      std_reference_rewards,
-      table_format=_TABLE_FORMAT.value)
+    estimators_,
+    dataset_names,
+    mean_test_rewards,
+    std_test_rewards,
+    mean_reference_rewards,
+    std_reference_rewards,
+    table_format=_TABLE_FORMAT.value)
 
 
 if __name__ == "__main__":
