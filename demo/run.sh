@@ -20,9 +20,8 @@ set -e
 python3 -m venv /tmp/eslb_venv
 source /tmp/eslb_venv/bin/activate
 pip3 install --upgrade pip setuptools wheel
-pip3 install -r ../requirements.txt
+pip3 install -r offpolicy_selection_eslb/requirements.txt
 
 # Runs an off-policy benchmark on UCI datasets with OpenML IDs 181, 30, 28, 182, 300, 32, 6, 184,
-# for 10 trials and confidence bound failure probability δ=0.01
-# ERROR python3 -m offpolicy_selection_eslb.demo.benchmark --dataset_type=uci_all --n_trials=10 --delta=0.01
-python3 benchmark.py --dataset_type=uci_all --n_trials=10 --delta=0.01
+# for 5 trials and confidence bound failure probability δ=0.01
+python3 -m offpolicy_selection_eslb.demo.benchmark --dataset_type=uci_all --n_trials=5 --delta=0.01

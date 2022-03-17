@@ -24,9 +24,13 @@ pip3 install -r offpolicy_selection_eslb/requirements.txt
 ## Usage
 
 To run the benchmark on the UCI datasets considered in the paper, execute:
+```
+offpolicy_selection_eslb/demo/run.sh
+```
+or
 
 ```
-python3 demo/benchmark.py --dataset_type=uci_all --n_trials=10 --delta=0.01
+python3 -m offpolicy_selection_eslb.demo.benchmark --dataset_type=uci_all --n_trials=5 --delta=0.01
 ```
 
 This will run a full benchmark. You can replace `uci_all` in the above with
