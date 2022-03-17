@@ -58,7 +58,7 @@ def get_reward(
     actions: np.ndarray,
     labels: np.ndarray,
     reward_noise_p: float = 0.1,
-    low_rew: float = 0.1,
+    low_rew: float = 0.0,
     high_rew: float = 1.,
 ):
   """Returns rewards and corrupted labels for matching actions.
